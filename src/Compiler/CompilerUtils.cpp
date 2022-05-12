@@ -293,6 +293,26 @@ static void tailorLLVMIR(llvm::Module &llvmModule) {
       llvm::MDString::get(ctx, getOnnxMlirFullVersion())};
   identMetadata->addOperand(llvm::MDNode::get(ctx, identNode));
 
+#ifdef PRODUCT_VERSION_MAJOR
+  int32_t ProductVersion = PRODUCT_VERSION_MAJOR;
+  llvmModule.addModuleFlag(
+      llvm::Module::Warning, "Product Major Version", ProductVersion);
+#endif
+#ifdef PRODUCT_VERSION_MINOR
+  int32_t ProductRelease = PRODUCT_VERSION_MINOR;
+  llvmModule.addModuleFlag(
+      llvm::Module::Warning, "Product Minor Version", ProductRelease);
+#endif
+#ifdef PRODUCT_VERSION_PATCH
+  int32_t ProductPatch = PRODUCT_VERSION_PATCH;
+  llvmModule.addModuleFlag(
+      llvm::Module::Warning, "Product Patchlevel", ProductPatch);
+#endif
+#ifdef PRODUCT_ID
+  llvmModule.addModuleFlag(llvm::Module::Warning, "Product Id",
+      llvm::MDString::get(ctx, PRODUCT_ID));
+#endif
+
   // Annotate functions to be accessible from DLL on Windows.
 #ifdef _WIN32
   SmallVector<StringRef, 4> exportedFuncs;
@@ -543,7 +563,7 @@ void registerDialects(mlir::MLIRContext &context) {
   context.getOrLoadDialect<mlir::vector::VectorDialect>();
   context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
   context.getOrLoadDialect<mlir::scf::SCFDialect>();
-  context.getOrLoadDialect<mlir::StandardOpsDialect>();
+  context.getOrLoadDialect<mlir::func::FuncDialect>();
   context.getOrLoadDialect<mlir::shape::ShapeDialect>();
   context.getOrLoadDialect<mlir::math::MathDialect>();
   context.getOrLoadDialect<mlir::memref::MemRefDialect>();
@@ -743,16 +763,18 @@ void setupModule(mlir::OwningOpRef<ModuleOp> &module,
 
   // Set the module target accelerators.
   if (!maccel.empty()) {
-    SmallVector<Attribute, 1> accels;
+    SmallVector<Attribute, 1> activeAccels;
     for (auto *accel : onnx_mlir::accel::Accelerator::getAccelerators()) {
       if (!accel->isActive() || !llvm::is_contained(maccel, accel->getKind()))
         continue;
       std::ostringstream versionNumber;
       versionNumber << std::hex << accel->getVersionNumber();
       std::string accelStr = accel->getName() + "-0x" + versionNumber.str();
-      accels.emplace_back(StringAttr::get(&context, accelStr));
+      activeAccels.emplace_back(StringAttr::get(&context, accelStr));
     }
-    moduleOp.setAttr("onnx-mlir.accels", ArrayAttr::get(&context, accels));
+    if (!activeAccels.empty())
+      moduleOp.setAttr(
+          "onnx-mlir.accels", ArrayAttr::get(&context, activeAccels));
   }
 
   if (keepFiles(KeepFilesOfType::MLIR)) {
@@ -784,14 +806,17 @@ int compileModule(mlir::OwningOpRef<ModuleOp> &module,
   setupModule(module, context, outputBaseName);
 
   mlir::PassManager pm(&context, mlir::OpPassManager::Nesting::Implicit);
+  bool hasActiveAccel = false;
   if (!maccel.empty()) {
     for (auto *accel : onnx_mlir::accel::Accelerator::getAccelerators()) {
       if (!accel->isActive())
         continue;
+      hasActiveAccel = true;
       accel->getOrLoadDialects(context);
       accel->addPasses(module, pm, emissionTarget);
     }
-  } else
+  }
+  if (!hasActiveAccel)
     addPasses(module, pm, emissionTarget);
   mlir::applyPassManagerCLOptions(pm);
   mlir::applyDefaultTimingPassManagerCLOptions(pm);
