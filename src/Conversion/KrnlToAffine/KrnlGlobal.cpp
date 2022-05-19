@@ -8,13 +8,15 @@
 //
 // =============================================================================
 //
-// This file lowers the KrnlLoadOp operator.
+// This file lowers the KrnlGlobalOp operator.
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Builders.h"
 
 #include "src/Conversion/KrnlToAffine/ConvertKrnlToAffine.hpp"
 #include "src/Conversion/KrnlToLLVM/RuntimeAPI.hpp"
@@ -30,37 +32,33 @@ namespace krnl {
 
 /// KrnlLoad will be lowered to std.load or affine.load, depending on whether
 /// the access indices are all affine maps or not.
-class KrnlLoadLowering : public ConversionPattern {
+class KrnlGlobalLowering : public ConversionPattern {
 public:
-  explicit KrnlLoadLowering(TypeConverter &typeConverter, MLIRContext *context)
+  explicit KrnlGlobalLowering(TypeConverter &typeConverter, MLIRContext *context)
       : ConversionPattern(
-            typeConverter, KrnlLoadOp::getOperationName(), 1, context) {}
+            typeConverter, KrnlGlobalOp::getOperationName(), 1, context) {}
 
   LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
       ConversionPatternRewriter &rewriter) const override {
-    auto loadOp = cast<KrnlLoadOp>(op);
-    KrnlLoadOpAdaptor operandAdaptor(loadOp);
+    auto globalOp = cast<KrnlGlobalOp>(op);
+    // KrnlGlobalOpAdaptor operandAdaptor(globalOp);
+    func::FuncOp funcOp = op-> getParentOfType<func::FuncOp>();
+    OpBuilder builder(funcOp);
+    memref::GlobalOp memGlobal = builder.create<memref::GlobalOp>(funcOp.getLoc(),globalOp.nameAttr().getValue(),
+                                  StringAttr(),globalOp.output().getType().dyn_cast<MemRefType>(),globalOp.valueAttr(),
+                                  true, IntegerAttr());
+    rewriter.replaceOpWithNewOp<memref::GetGlobalOp>(op,globalOp.output().getType(),memGlobal.sym_nameAttr().getValue());
 
-    // Prepare inputs.
-    Value memref = operandAdaptor.memref();
-    SmallVector<Value, 4> indices = operandAdaptor.indices();
 
-    // Check whether all indices are affine maps or not.
-    bool affineIndices =
-        !llvm::any_of(indices, [](Value v) { return !isValidDim(v); });
-
-    // if (affineIndices)
-    //   rewriter.replaceOpWithNewOp<AffineLoadOp>(op, memref, indices);
-    // else
-    rewriter.replaceOpWithNewOp<memref::LoadOp>(op, memref, indices);
+    
 
     return success();
   }
 };
 
-void populateLoweringKrnlLoadOpPattern(TypeConverter &typeConverter,
+void populateLoweringKrnlGlobalOpPattern(TypeConverter &typeConverter,
     RewritePatternSet &patterns, MLIRContext *ctx) {
-  patterns.insert<KrnlLoadLowering>(typeConverter, ctx);
+  patterns.insert<KrnlGlobalLowering>(typeConverter, ctx);
 }
 
 } // namespace krnl

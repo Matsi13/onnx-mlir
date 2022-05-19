@@ -687,6 +687,13 @@ void ConvertKrnlToAffinePass::runOnOperation() {
   target.addLegalDialect<mlir::AffineDialect, mlir::arith::ArithmeticDialect,
       mlir::memref::MemRefDialect, func::FuncDialect,
       mlir::vector::VectorDialect>();
+  
+   //lijx
+  target.addIllegalOp<KrnlGlobalOp>();
+  target.addIllegalOp<memref::AllocaOp>();
+  target.addLegalOp<memref::GlobalOp>();
+  target.addLegalOp<memref::GetGlobalOp>();
+
 
   // Patterns.
   RewritePatternSet patterns(ctx);
@@ -742,6 +749,11 @@ void populateKrnlToAffineConversion(TypeConverter &typeConverter,
   krnl::populateLoweringKrnlMatmultOpPattern(typeConverter, patterns, ctx);
   krnl::populateLoweringKrnlMemsetOpPattern(typeConverter, patterns, ctx);
   krnl::populateLoweringKrnlTerminatorOpPattern(typeConverter, patterns, ctx);
+
+  // lijx
+  krnl::populateLoweringKrnlGlobalOpPattern(typeConverter, patterns, ctx);
+  krnl::populateLoweringMemrefAllocaOpPattern(typeConverter, patterns, ctx);
+
 }
 
 } // namespace krnl
