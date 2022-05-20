@@ -80,16 +80,16 @@ void populateLoweringKrnlMemsetOpPattern(mlir::TypeConverter &typeConverter,
 void populateLoweringKrnlTerminatorOpPattern(mlir::TypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
 
-<<<<<<< HEAD
 
-=======
+
+
 // lijx
 void populateLoweringKrnlGlobalOpPattern(mlir::TypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
 // void populateLoweringMemrefAllocaOpPattern(mlir::TypeConverter &typeConverter,
 //     mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
 
->>>>>>> tempt
+
 
 } // namespace krnl
 } // namespace onnx_mlir

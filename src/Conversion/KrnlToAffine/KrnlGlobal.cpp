@@ -1,6 +1,4 @@
-<<<<<<< HEAD
 
-=======
 /*
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -24,16 +22,13 @@
 #include "src/Conversion/KrnlToAffine/ConvertKrnlToAffine.hpp"
 #include "src/Conversion/KrnlToLLVM/RuntimeAPI.hpp"
 #include "src/Dialect/Krnl/KrnlOps.hpp"
->>>>>>> tempt
+
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "krnl_to_affine"
 
 using namespace mlir;
-<<<<<<< HEAD
 
-=======
->>>>>>> tempt
 
 namespace onnx_mlir {
 namespace krnl {
@@ -48,9 +43,7 @@ public:
 
   LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
       ConversionPatternRewriter &rewriter) const override {
-<<<<<<< HEAD
-   
-=======
+
     auto globalOp = cast<KrnlGlobalOp>(op);
     // KrnlGlobalOpAdaptor operandAdaptor(globalOp);
     func::FuncOp funcOp = op-> getParentOfType<func::FuncOp>();
@@ -62,7 +55,7 @@ public:
 
 
     
->>>>>>> tempt
+
 
     return success();
   }

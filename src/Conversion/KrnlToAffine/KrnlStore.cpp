@@ -50,15 +50,12 @@ public:
     bool affineIndices =
         !llvm::any_of(indices, [](Value v) { return !isValidDim(v); });
 
-<<<<<<< HEAD
-    
-   
-=======
+
     // if (affineIndices)
     //   rewriter.replaceOpWithNewOp<AffineStoreOp>(op, value, memref, indices);
     // else
        rewriter.replaceOpWithNewOp<memref::StoreOp>(op, value, memref, indices);
->>>>>>> tempt
+
 
     return success();
   }

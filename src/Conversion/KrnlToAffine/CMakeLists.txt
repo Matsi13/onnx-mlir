@@ -12,11 +12,7 @@ add_onnx_mlir_library(OMKrnlToAffine
   KrnlToAffineHelper.cpp
   # lijx
   KrnlGlobal.cpp
-<<<<<<< HEAD
-  
-=======
-  # MemrefAlloca.cpp
->>>>>>> tempt
+
 
   LINK_LIBS PUBLIC
   OMSpecializedKernelOpInterface

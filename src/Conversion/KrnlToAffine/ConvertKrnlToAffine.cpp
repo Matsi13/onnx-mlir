@@ -756,12 +756,9 @@ void populateKrnlToAffineConversion(TypeConverter &typeConverter,
 
   // lijx
   krnl::populateLoweringKrnlGlobalOpPattern(typeConverter, patterns, ctx);
-<<<<<<< HEAD
-  
-=======
+
   // krnl::populateLoweringMemrefAllocaOpPattern(typeConverter, patterns, ctx);
 
->>>>>>> tempt
 }
 
 } // namespace krnl

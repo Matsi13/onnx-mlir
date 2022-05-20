@@ -1,6 +1,4 @@
-<<<<<<< HEAD
 
-=======
 /*
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -22,56 +20,45 @@
 #include "src/Conversion/KrnlToAffine/ConvertKrnlToAffine.hpp"
 #include "src/Conversion/KrnlToLLVM/RuntimeAPI.hpp"
 //#include "src/Dialect/Krnl/KrnlOps.hpp"
->>>>>>> tempt
+
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "krnl_to_affine"
 
 using namespace mlir;
-<<<<<<< HEAD
 
-=======
->>>>>>> tempt
 
 namespace onnx_mlir {
 namespace krnl {
 
 /// KrnlLoad will be lowered to std.load or affine.load, depending on whether
 /// the access indices are all affine maps or not.
-<<<<<<< HEAD
 
-=======
 class MemrefAllocaLowering : public ConversionPattern {
 public:
   explicit MemrefAllocaLowering(TypeConverter &typeConverter, MLIRContext *context)
->>>>>>> tempt
+
       : ConversionPattern(
             typeConverter, memref::AllocaOp::getOperationName(), 1, context) {}
 
   LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
       ConversionPatternRewriter &rewriter) const override {
-<<<<<<< HEAD
-    
-    
-    
-=======
+
     auto allocaOp = cast<memref::AllocaOp>(op);
     memref::AllocaOpAdaptor allocOpAdaptor(allocaOp);
     rewriter.replaceOpWithNewOp<memref::AllocOp>(op,allocaOp.getType(),allocOpAdaptor.dynamicSizes(),allocaOp.alignmentAttr());
 
 
->>>>>>> tempt
+
     return success();
   }
 };
 
 void populateLoweringMemrefAllocaOpPattern(TypeConverter &typeConverter,
     RewritePatternSet &patterns, MLIRContext *ctx) {
-<<<<<<< HEAD
-  
-=======
+
   patterns.insert<MemrefAllocaLowering>(typeConverter, ctx);
->>>>>>> tempt
+
 }
 
 } // namespace krnl
