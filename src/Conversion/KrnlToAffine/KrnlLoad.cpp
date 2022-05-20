@@ -49,11 +49,14 @@ public:
     bool affineIndices =
         !llvm::any_of(indices, [](Value v) { return !isValidDim(v); });
 
-    // lijx
+<<<<<<< HEAD
+    
+=======
     // if (affineIndices)
     //   rewriter.replaceOpWithNewOp<AffineLoadOp>(op, memref, indices);
     // else
-      rewriter.replaceOpWithNewOp<memref::LoadOp>(op, memref, indices);
+    rewriter.replaceOpWithNewOp<memref::LoadOp>(op, memref, indices);
+>>>>>>> tempt
 
     return success();
   }
