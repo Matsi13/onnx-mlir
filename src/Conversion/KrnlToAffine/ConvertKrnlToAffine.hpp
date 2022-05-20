@@ -83,8 +83,8 @@ void populateLoweringKrnlTerminatorOpPattern(mlir::TypeConverter &typeConverter,
 // lijx
 void populateLoweringKrnlGlobalOpPattern(mlir::TypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
-void populateLoweringMemrefAllocaOpPattern(mlir::TypeConverter &typeConverter,
-    mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
+// void populateLoweringMemrefAllocaOpPattern(mlir::TypeConverter &typeConverter,
+//     mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
 
 
 } // namespace krnl

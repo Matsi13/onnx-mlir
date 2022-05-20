@@ -46,7 +46,7 @@ public:
     OpBuilder builder(funcOp);
     memref::GlobalOp memGlobal = builder.create<memref::GlobalOp>(funcOp.getLoc(),globalOp.nameAttr().getValue(),
                                   StringAttr(),globalOp.output().getType().dyn_cast<MemRefType>(),globalOp.valueAttr(),
-                                  true, IntegerAttr());
+                                  false, IntegerAttr());
     rewriter.replaceOpWithNewOp<memref::GetGlobalOp>(op,globalOp.output().getType(),memGlobal.sym_nameAttr().getValue());
 
 

@@ -690,7 +690,7 @@ void ConvertKrnlToAffinePass::runOnOperation() {
   
    //lijx
   target.addIllegalOp<KrnlGlobalOp>();
-  target.addIllegalOp<memref::AllocaOp>();
+  // target.addIllegalOp<memref::AllocaOp>();
   target.addLegalOp<memref::GlobalOp>();
   target.addLegalOp<memref::GetGlobalOp>();
 
@@ -752,7 +752,7 @@ void populateKrnlToAffineConversion(TypeConverter &typeConverter,
 
   // lijx
   krnl::populateLoweringKrnlGlobalOpPattern(typeConverter, patterns, ctx);
-  krnl::populateLoweringMemrefAllocaOpPattern(typeConverter, patterns, ctx);
+  // krnl::populateLoweringMemrefAllocaOpPattern(typeConverter, patterns, ctx);
 
 }
 
