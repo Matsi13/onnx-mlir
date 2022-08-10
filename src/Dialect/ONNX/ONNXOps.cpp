@@ -26,6 +26,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/FormatVariadic.h"
 
+#include "src/Dialect/ONNX/ONNXEinsumOpHelper.hpp"
 #include "src/Dialect/ONNX/ONNXOps.hpp"
 #include "src/Dialect/ONNX/ONNXOpsHelper.hpp"
 #include "src/Dialect/ONNX/ShapeInference/ONNXShapeHelper.hpp"
@@ -67,6 +68,89 @@ void ONNXDialect::initialize() {
 //===----------------------------------------------------------------------===//
 // ONNX Helper functions for shape helpers
 //===----------------------------------------------------------------------===//
+
+// Get reduction type.
+static RankedTensorType getReductionOutputType(
+    ShapedType operandTy, Optional<ArrayAttr> axesAttrs, uint64_t keepdims) {
+  int64_t rank = operandTy.getRank();
+
+  SmallVector<int64_t, 4> axes;
+  if (axesAttrs != llvm::None)
+    for (auto axisAttr : axesAttrs.getValue()) {
+      int64_t axis = axisAttr.cast<IntegerAttr>().getInt();
+      axis = axis >= 0 ? axis : (rank + axis);
+      assert(axis >= -rank && axis <= rank - 1);
+      if (std::find(axes.begin(), axes.end(), axis) == axes.end())
+        axes.emplace_back(axis);
+    }
+  else
+    for (decltype(rank) i = 0; i < rank; ++i)
+      axes.emplace_back(i);
+
+  // Mark reduction axes.
+  SmallVector<bool, 4> isReductionAxis;
+  for (decltype(rank) i = 0; i < rank; ++i)
+    isReductionAxis.emplace_back(
+        (std::find(axes.begin(), axes.end(), i) != axes.end()) ? true : false);
+
+  // KeepDims
+  bool isKeepdims = (keepdims == 1) ? true : false;
+
+  SmallVector<int64_t, 4> dims;
+  for (decltype(rank) i = 0; i < rank; ++i) {
+    if (isReductionAxis[i]) {
+      if (isKeepdims)
+        dims.emplace_back(1); // reduction dimension
+    } else
+      dims.emplace_back(operandTy.getShape()[i]);
+  }
+
+  return RankedTensorType::get(dims, operandTy.getElementType());
+}
+
+// Reduction with axes is from ConstantOp.
+// Only ReduceSum call this function now.
+static RankedTensorType getReductionOutputType(ShapedType operandTy,
+    DenseElementsAttr axesAttrs, uint64_t keepdims,
+    uint64_t noop_with_empty_axes) {
+  int64_t rank = operandTy.getRank();
+
+  SmallVector<int64_t, 4> axes;
+  if (axesAttrs)
+    for (auto element : axesAttrs.getValues<IntegerAttr>()) {
+      int64_t axis = element.getInt();
+      if (axis < -rank || axis > rank - 1)
+        return RankedTensorType();
+
+      axis = axis >= 0 ? axis : (rank + axis);
+      if (std::find(axes.begin(), axes.end(), axis) == axes.end())
+        axes.emplace_back(axis);
+    }
+
+  if (axes.size() == 0 && !noop_with_empty_axes)
+    for (decltype(rank) i = 0; i < rank; ++i)
+      axes.emplace_back(i);
+
+  // Mark reduction axes.
+  SmallVector<bool, 4> isReductionAxis;
+  for (decltype(rank) i = 0; i < rank; ++i)
+    isReductionAxis.emplace_back(
+        (std::find(axes.begin(), axes.end(), i) != axes.end()) ? true : false);
+
+  // KeepDims
+  bool isKeepdims = (keepdims == 1) ? true : false;
+
+  SmallVector<int64_t, 4> dims;
+  for (decltype(rank) i = 0; i < rank; ++i) {
+    if (isReductionAxis[i]) {
+      if (isKeepdims)
+        dims.emplace_back(1); // reduction dimension
+    } else
+      dims.emplace_back(operandTy.getShape()[i]);
+  }
+
+  return RankedTensorType::get(dims, operandTy.getElementType());
+}
 
 // Handle shapes for operations with a single output.
 template <class SHAPE_HELPER, class OP, class ADAPTOR>
@@ -123,6 +207,20 @@ static LogicalResult inferShapeForBroadcastingOps(
   return success();
 }
 
+// Handle shape inference for reduction like operators.
+template <class OP, class ADAPTOR>
+static LogicalResult inferShapeForReductionOps(OP &op) {
+  ADAPTOR operandAdaptor(op);
+  if (llvm::any_of(operandAdaptor.getOperands(),
+          [](const Value &op) { return !hasShapeAndRank(op); }))
+    return success(); // cannot infer when the operands shape is not yet known.
+
+  auto operandTy = op.getOperand().getType().template cast<ShapedType>();
+  auto resultTy = getReductionOutputType(operandTy, op.axes(), op.keepdims());
+  op.getResult().setType(resultTy);
+  return success();
+}
+
 #define NOT_IMPLEMENTED_MESSAGE                                                \
   (getOperationName() +                                                        \
       ": is not supported at this time. Please open an issue on "              \
@@ -136,7 +234,7 @@ static LogicalResult inferShapeForBroadcastingOps(
 // This method substitutes any uses of dimensions and symbols (e.g.
 // dim#0 with dimReplacements[0]) in an affine map, simplifies the modified
 // affine map, and returns an integer constant.
-int64_t AffineMapIntConstant(Builder &builder, AffineMap map,
+static int64_t AffineMapIntConstant(Builder &builder, AffineMap map,
     ArrayRef<int64_t> dimReplacements, ArrayRef<int64_t> symReplacements,
     unsigned numResultDims, unsigned numResultSyms) {
   // Prepare affine expressions.
@@ -155,105 +253,6 @@ int64_t AffineMapIntConstant(Builder &builder, AffineMap map,
       dimExprs, symExprs, numResultDims, numResultSyms);
   AffineMap simplifiedMap = simplifyAffineMap(replacedDimMap);
   return simplifiedMap.getSingleConstantResult();
-}
-
-//===----------------------------------------------------------------------===//
-// Get reduction type
-//===----------------------------------------------------------------------===//
-RankedTensorType getReductionOutputType(RankedTensorType operandTy,
-    Optional<ArrayAttr> axesAttrs, uint64_t keepdims) {
-  int64_t rank = operandTy.getRank();
-
-  SmallVector<int64_t, 4> axes;
-  if (axesAttrs != llvm::None) {
-    for (auto axisAttr : axesAttrs.getValue()) {
-      int64_t axis = axisAttr.cast<IntegerAttr>().getInt();
-      axis = axis >= 0 ? axis : (rank + axis);
-      assert(axis >= -rank && axis <= rank - 1);
-      if (std::find(axes.begin(), axes.end(), axis) == axes.end())
-        axes.emplace_back(axis);
-    }
-  } else {
-    for (decltype(rank) i = 0; i < rank; ++i) {
-      axes.emplace_back(i);
-    }
-  }
-
-  // Mark reduction axes.
-  SmallVector<bool, 4> isReductionAxis;
-  for (decltype(rank) i = 0; i < rank; ++i) {
-    if (std::find(axes.begin(), axes.end(), i) != axes.end())
-      isReductionAxis.emplace_back(true);
-    else
-      isReductionAxis.emplace_back(false);
-  }
-
-  // KeepDims
-  bool isKeepdims = (keepdims == 1) ? true : false;
-
-  SmallVector<int64_t, 4> dims;
-  for (decltype(rank) i = 0; i < rank; ++i) {
-    if (isReductionAxis[i]) {
-      if (isKeepdims)
-        dims.emplace_back(1); // reduction dimension
-    } else {
-      dims.emplace_back(operandTy.getShape()[i]);
-    }
-  }
-
-  return RankedTensorType::get(dims, operandTy.getElementType());
-}
-
-// Reduction with axes is from ConstantOp.
-// Only ReduceSum call this function now.
-static RankedTensorType getReductionOutputType(RankedTensorType operandTy,
-    DenseElementsAttr axesAttrs, uint64_t keepdims,
-    uint64_t noop_with_empty_axes) {
-  int64_t rank = operandTy.getRank();
-
-  SmallVector<int64_t, 4> axes;
-  if (axesAttrs) {
-    for (auto element : axesAttrs.getValues<IntegerAttr>()) {
-      int64_t axis = element.getInt();
-      if (axis < -rank || axis > rank - 1) {
-        return RankedTensorType();
-      }
-      axis = axis >= 0 ? axis : (rank + axis);
-      if (std::find(axes.begin(), axes.end(), axis) == axes.end())
-        axes.emplace_back(axis);
-    }
-  }
-  if (axes.size() == 0) {
-    if (!noop_with_empty_axes) {
-      for (decltype(rank) i = 0; i < rank; ++i) {
-        axes.emplace_back(i);
-      }
-    }
-  }
-
-  // Mark reduction axes.
-  SmallVector<bool, 4> isReductionAxis;
-  for (decltype(rank) i = 0; i < rank; ++i) {
-    if (std::find(axes.begin(), axes.end(), i) != axes.end())
-      isReductionAxis.emplace_back(true);
-    else
-      isReductionAxis.emplace_back(false);
-  }
-
-  // KeepDims
-  bool isKeepdims = (keepdims == 1) ? true : false;
-
-  SmallVector<int64_t, 4> dims;
-  for (decltype(rank) i = 0; i < rank; ++i) {
-    if (isReductionAxis[i]) {
-      if (isKeepdims)
-        dims.emplace_back(1); // reduction dimension
-    } else {
-      dims.emplace_back(operandTy.getShape()[i]);
-    }
-  }
-
-  return RankedTensorType::get(dims, operandTy.getElementType());
 }
 
 //===----------------------------------------------------------------------===//
@@ -680,25 +679,16 @@ LogicalResult ONNXArgMinOp::inferShapes(
 //===----------------------------------------------------------------------===//
 
 void ONNXEntryPointOp::build(mlir::OpBuilder &builder,
-    mlir::OperationState &state, mlir::func::FuncOp function, int numInputs,
-    int numOutputs, std::string signature) {
+    mlir::OperationState &state, mlir::func::FuncOp function) {
   state.addAttribute(ONNXEntryPointOp::getEntryPointFuncAttrName(),
       SymbolRefAttr::get(function));
-  state.addAttribute(ONNXEntryPointOp::getNumInputsAttrName(),
-      builder.getI32IntegerAttr(numInputs));
-  state.addAttribute(ONNXEntryPointOp::getNumOutputsAttrName(),
-      builder.getI32IntegerAttr(numOutputs));
-  state.addAttribute(ONNXEntryPointOp::getSignatureAttrName(),
-      builder.getStringAttr(signature));
 }
 
-ONNXEntryPointOp ONNXEntryPointOp::create(mlir::Location location,
-    mlir::func::FuncOp &func, int numInputs, int numOutputs,
-    std::string signature) {
+ONNXEntryPointOp ONNXEntryPointOp::create(
+    mlir::Location location, mlir::func::FuncOp &func) {
   mlir::OperationState state(location, "onnx.EntryPoint");
   OpBuilder builder(location->getContext());
-  mlir::ONNXEntryPointOp::build(
-      builder, state, func, numInputs, numOutputs, signature);
+  mlir::ONNXEntryPointOp::build(builder, state, func);
   Operation *op = mlir::Operation::create(state);
   auto onnxEntryOp = llvm::cast<mlir::ONNXEntryPointOp>(op);
   return onnxEntryOp;
@@ -1657,17 +1647,23 @@ LogicalResult ONNXTransposeOp::inferShapes(
 }
 
 //===----------------------------------------------------------------------===//
+// ONNXTriluOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult ONNXTriluOp::inferShapes(
+    std::function<void(mlir::Region &)> doShapeInference) {
+  getResult().setType(getOperands()[0].getType());
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // ReduceMax
 //===----------------------------------------------------------------------===//
 
 LogicalResult ONNXReduceMaxOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
-  if (!getOperand().getType().isa<RankedTensorType>())
-    return success();
-
-  auto operandTy = getOperand().getType().cast<RankedTensorType>();
-  getResult().setType(getReductionOutputType(operandTy, axes(), keepdims()));
-  return success();
+  return inferShapeForReductionOps<ONNXReduceMaxOp, ONNXReduceMaxOpAdaptor>(
+      *this);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1676,12 +1672,8 @@ LogicalResult ONNXReduceMaxOp::inferShapes(
 
 LogicalResult ONNXReduceMeanOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
-  if (!getOperand().getType().isa<RankedTensorType>())
-    return success();
-
-  auto operandTy = getOperand().getType().cast<RankedTensorType>();
-  getResult().setType(getReductionOutputType(operandTy, axes(), keepdims()));
-  return success();
+  return inferShapeForReductionOps<ONNXReduceMeanOp, ONNXReduceMeanOpAdaptor>(
+      *this);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1690,12 +1682,8 @@ LogicalResult ONNXReduceMeanOp::inferShapes(
 
 LogicalResult ONNXReduceMinOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
-  if (!getOperand().getType().isa<RankedTensorType>())
-    return success();
-
-  auto operandTy = getOperand().getType().cast<RankedTensorType>();
-  getResult().setType(getReductionOutputType(operandTy, axes(), keepdims()));
-  return success();
+  return inferShapeForReductionOps<ONNXReduceMinOp, ONNXReduceMinOpAdaptor>(
+      *this);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1704,12 +1692,58 @@ LogicalResult ONNXReduceMinOp::inferShapes(
 
 LogicalResult ONNXReduceProdOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
-  if (!getOperand().getType().isa<RankedTensorType>())
-    return success();
+  return inferShapeForReductionOps<ONNXReduceProdOp, ONNXReduceProdOpAdaptor>(
+      *this);
+}
 
-  auto operandTy = getOperand().getType().cast<RankedTensorType>();
-  getResult().setType(getReductionOutputType(operandTy, axes(), keepdims()));
-  return success();
+//===----------------------------------------------------------------------===//
+// ReduceL1
+//===----------------------------------------------------------------------===//
+
+LogicalResult ONNXReduceL1Op::inferShapes(
+    std::function<void(mlir::Region &)> doShapeInference) {
+  return inferShapeForReductionOps<ONNXReduceL1Op, ONNXReduceL1OpAdaptor>(
+      *this);
+}
+
+//===----------------------------------------------------------------------===//
+// ReduceL2
+//===----------------------------------------------------------------------===//
+
+LogicalResult ONNXReduceL2Op::inferShapes(
+    std::function<void(mlir::Region &)> doShapeInference) {
+  return inferShapeForReductionOps<ONNXReduceL2Op, ONNXReduceL2OpAdaptor>(
+      *this);
+}
+
+//===----------------------------------------------------------------------===//
+// ReduceLogSum
+//===----------------------------------------------------------------------===//
+
+LogicalResult ONNXReduceLogSumOp::inferShapes(
+    std::function<void(mlir::Region &)> doShapeInference) {
+  return inferShapeForReductionOps<ONNXReduceLogSumOp,
+      ONNXReduceLogSumOpAdaptor>(*this);
+}
+
+//===----------------------------------------------------------------------===//
+// ReduceLogSumExp
+//===----------------------------------------------------------------------===//
+
+LogicalResult ONNXReduceLogSumExpOp::inferShapes(
+    std::function<void(mlir::Region &)> doShapeInference) {
+  return inferShapeForReductionOps<ONNXReduceLogSumExpOp,
+      ONNXReduceLogSumExpOpAdaptor>(*this);
+}
+
+//===----------------------------------------------------------------------===//
+// ReduceSumSquare
+//===----------------------------------------------------------------------===//
+
+LogicalResult ONNXReduceSumSquareOp::inferShapes(
+    std::function<void(mlir::Region &)> doShapeInference) {
+  return inferShapeForReductionOps<ONNXReduceSumSquareOp,
+      ONNXReduceSumSquareOpAdaptor>(*this);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1771,12 +1805,8 @@ LogicalResult ONNXReduceSumOp::inferShapes(
 
 LogicalResult ONNXReduceSumV11Op::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
-  if (!getOperand().getType().isa<RankedTensorType>())
-    return success();
-
-  auto operandTy = getOperand().getType().cast<RankedTensorType>();
-  getResult().setType(getReductionOutputType(operandTy, axes(), keepdims()));
-  return success();
+  return inferShapeForReductionOps<ONNXReduceSumV11Op,
+      ONNXReduceSumV11OpAdaptor>(*this);
 }
 
 //===----------------------------------------------------------------------===//
@@ -3353,6 +3383,8 @@ LogicalResult ONNXGatherElementsOp::verify() {
     return onnx_mlir::Diagnostic::emitAttributeOutOfRangeError(
         *this->getOperation(), "axis", axis,
         onnx_mlir::Diagnostic::Range<int64_t>(-dataRank, dataRank - 1));
+  if (axis < 0)
+    axis += dataRank;
 
   // All index values in 'indices' are expected to be within bounds [-s, s-1]
   // along axis of size s.
@@ -3786,7 +3818,8 @@ LogicalResult ONNXBatchNormalizationOp::inferShapes(
 
 LogicalResult ONNXBitShiftOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
-  return emitError(NOT_IMPLEMENTED_MESSAGE);
+  return inferShapeForBroadcastingOps<ONNXBitShiftOp, ONNXBitShiftOpAdaptor>(
+      *this);
 }
 
 LogicalResult ONNXCeilOp::inferShapes(
@@ -3995,6 +4028,49 @@ LogicalResult ONNXDetOp::inferShapes(
   return emitError(NOT_IMPLEMENTED_MESSAGE);
 }
 
+LogicalResult ONNXEinsumOp::verify() {
+  einsum::ErrorFn errorFn = [this]() -> mlir::InFlightDiagnostic {
+    return this->emitOpError() << "equation '" << this->equation() << "': ";
+  };
+
+  ONNXEinsumOpAdaptor operandAdaptor(*this);
+  ValueRange inputs = operandAdaptor.Inputs();
+
+  if (failed(einsum::verifyEquation(equation(), inputs.size(), errorFn))) {
+    return failure();
+  }
+
+  Type firstElementType =
+      inputs[0].getType().cast<ShapedType>().getElementType();
+  for (Value input : inputs) {
+    ShapedType type = input.getType().cast<ShapedType>();
+    if (type.getElementType() != firstElementType) {
+      return emitOpError() << "different input element types";
+    }
+  }
+  if (!llvm::all_of(inputs, hasShapeAndRank))
+    return success(); // Can only infer once operand shapes are known.
+  return einsum::verifyShapes(operandAdaptor, errorFn);
+}
+
+LogicalResult ONNXEinsumOp::inferShapes(
+    std::function<void(mlir::Region &)> doShapeInference) {
+  ONNXEinsumOpAdaptor operandAdaptor(*this);
+  if (!llvm::all_of(operandAdaptor.Inputs(), hasShapeAndRank))
+    return success(); // Can only infer once operand shapes are known.
+
+  einsum::ErrorFn errorFn = [this]() {
+    return this->emitOpError() << "equation '" << this->equation() << "': ";
+  };
+  FailureOr<einsum::Shape> shape =
+      einsum::inferOutputShape(operandAdaptor, errorFn);
+  assert(succeeded(shape) && "any failure should be caught in verify()");
+  Type elementType =
+      getOperand(0).getType().cast<ShapedType>().getElementType();
+  getResult().setType(RankedTensorType::get(*shape, elementType));
+  return success();
+}
+
 LogicalResult ONNXEqualOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
   Builder b(getContext());
@@ -4004,7 +4080,20 @@ LogicalResult ONNXEqualOp::inferShapes(
 
 LogicalResult ONNXEyeLikeOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
-  return emitError(NOT_IMPLEMENTED_MESSAGE);
+  auto builder = mlir::OpBuilder(getContext());
+  if (!hasShapeAndRank(input())) {
+    return success();
+  }
+  RankedTensorType inputType = input().getType().cast<RankedTensorType>();
+  Type elementType;
+  if (dtypeAttr()) {
+    elementType = convertONNXTypeToMLIRType(builder,
+        (onnx::TensorProto_DataType)dtypeAttr().getValue().getSExtValue());
+  } else {
+    elementType = inputType.getElementType();
+  }
+  getResult().setType(RankedTensorType::get(inputType.getShape(), elementType));
+  return success();
 }
 
 LogicalResult ONNXFloorOp::inferShapes(
@@ -4065,6 +4154,16 @@ LogicalResult ONNXHardmaxOp::inferShapes(
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// ONNXHardSwishOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult ONNXHardSwishOp::inferShapes(
+    std::function<void(mlir::Region &)> doShapeInference) {
+  getResult().setType(getOperand().getType());
+  return success();
+}
+
 LogicalResult ONNXIfOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
   return emitError(NOT_IMPLEMENTED_MESSAGE);
@@ -4075,10 +4174,25 @@ LogicalResult ONNXIsInfOp::inferShapes(
   return emitError(NOT_IMPLEMENTED_MESSAGE);
 }
 
+//===------------------------------------------------------------------------===//
+// IsNaNOp
+//===------------------------------------------------------------------------===//
+
 LogicalResult ONNXIsNaNOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
-  return emitError(NOT_IMPLEMENTED_MESSAGE);
+  ONNXIsNaNOpAdaptor operandAdaptor(*this);
+  if (!hasShapeAndRank(operandAdaptor.X()))
+    return success();
+
+  ArrayRef<int64_t> inputShape = X().getType().cast<ShapedType>().getShape();
+  IntegerType i1Type = IntegerType::get(getContext(), 1, IntegerType::Signless);
+  getResult().setType(RankedTensorType::get(inputShape, i1Type));
+  return success();
 }
+
+//===------------------------------------------------------------------------===//
+// LRNOp
+//===------------------------------------------------------------------------===//
 
 LogicalResult ONNXLRNOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
@@ -4111,12 +4225,14 @@ LogicalResult ONNXLogSoftmaxOp::verify() {
 
 LogicalResult ONNXLogSoftmaxOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
-  return emitError(NOT_IMPLEMENTED_MESSAGE);
+  getResult().setType(getOperand().getType());
+  return success();
 }
 
 LogicalResult ONNXLpNormalizationOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
-  return emitError(NOT_IMPLEMENTED_MESSAGE);
+  getResult().setType(getOperand().getType());
+  return success();
 }
 
 LogicalResult ONNXLpPoolOp::inferShapes(
@@ -4151,7 +4267,8 @@ LogicalResult ONNXMeanOp::inferShapes(
 
 LogicalResult ONNXMeanVarianceNormalizationOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
-  return emitError(NOT_IMPLEMENTED_MESSAGE);
+  getResult().setType(getOperand().getType());
+  return success();
 }
 
 LogicalResult ONNXModOp::verify() {
@@ -4298,6 +4415,54 @@ LogicalResult ONNXOneHotOp::inferShapes(
   auto elementType = values().getType().cast<ShapedType>().getElementType();
   return shapeHelperInferShapes<ONNXOneHotOpShapeHelper, ONNXOneHotOp,
       ONNXOneHotOpAdaptor>(*this, elementType);
+}
+
+LogicalResult ONNXOptionalOp::verify() {
+  if (type().hasValue() != input().getType().isa<NoneType>())
+    return emitError(
+        "Optional should have either type attribute or input value");
+  return success();
+}
+
+LogicalResult ONNXOptionalOp::inferShapes(
+    std::function<void(mlir::Region &)> doShapeInference) {
+  Type ty;
+  if (auto typeAttr = type()) {
+    ty = typeAttr.value();
+  } else {
+    ty = input().getType();
+    // checked in verify()
+    assert(!ty.isa<NoneType>() && "type attribute or input value needed");
+  }
+  getResult().setType(OptType::get(ty));
+  return success();
+}
+
+LogicalResult ONNXOptionalGetElementOp::verify() {
+  if (!input().getType().isa<OptType>())
+    return emitError("OptionalGetElement input should have optional type");
+  return success();
+}
+
+LogicalResult ONNXOptionalGetElementOp::inferShapes(
+    std::function<void(mlir::Region &)> doShapeInference) {
+  Type elementType = input().getType().cast<OptType>().getElementType();
+  getResult().setType(elementType);
+  return success();
+}
+
+LogicalResult ONNXOptionalHasElementOp::verify() {
+  if (!input().getType().isa<OptType>())
+    return emitError("OptionalHasElement input should have optional type");
+  return success();
+}
+
+LogicalResult ONNXOptionalHasElementOp::inferShapes(
+    std::function<void(mlir::Region &)> doShapeInference) {
+  Builder builder(getContext());
+  Type scalarBoolType = RankedTensorType::get({}, builder.getI1Type());
+  getResult().setType(scalarBoolType);
+  return success();
 }
 
 LogicalResult ONNXRandomNormalOp::inferShapes(
@@ -4522,31 +4687,6 @@ LogicalResult ONNXReverseSequenceOp::verify() {
   return success();
 }
 
-LogicalResult ONNXReduceL1Op::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
-  return emitError(NOT_IMPLEMENTED_MESSAGE);
-}
-
-LogicalResult ONNXReduceL2Op::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
-  return emitError(NOT_IMPLEMENTED_MESSAGE);
-}
-
-LogicalResult ONNXReduceLogSumOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
-  return emitError(NOT_IMPLEMENTED_MESSAGE);
-}
-
-LogicalResult ONNXReduceLogSumExpOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
-  return emitError(NOT_IMPLEMENTED_MESSAGE);
-}
-
-LogicalResult ONNXReduceSumSquareOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
-  return emitError(NOT_IMPLEMENTED_MESSAGE);
-}
-
 LogicalResult ONNXRoiAlignOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
   // Cannot infer shape if no shape exists.
@@ -4754,6 +4894,24 @@ LogicalResult ONNXScatterElementsOp::verify() {
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// ONNXScatter
+//===----------------------------------------------------------------------===//
+
+LogicalResult ONNXScatterOp::inferShapes(
+    std::function<void(mlir::Region &)> doShapeInference) {
+  // Cannot infer the shape of the output if the input shape is not yet known.
+  if (!hasShapeAndRank(data()))
+    return success();
+
+  getResult().setType(data().getType());
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// ONNXScatterElements
+//===----------------------------------------------------------------------===//
+
 LogicalResult ONNXScatterElementsOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
   // Cannot infer the shape of the output if the input shape is not yet known.
@@ -4865,7 +5023,8 @@ LogicalResult ONNXScatterNDOp::inferShapes(
 
 LogicalResult ONNXShrinkOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
-  return emitError(NOT_IMPLEMENTED_MESSAGE);
+  getResult().setType(getOperand().getType());
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -4927,7 +5086,8 @@ LogicalResult ONNXTfIdfVectorizerOp::inferShapes(
 
 LogicalResult ONNXThresholdedReluOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
-  return emitError(NOT_IMPLEMENTED_MESSAGE);
+  getResult().setType(getOperand().getType());
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -5168,7 +5328,6 @@ NOT_IMPLEMENTED_INFERSHAPE(ONNXAdamOp)
 NOT_IMPLEMENTED_INFERSHAPE(ONNXClipV6Op)
 NOT_IMPLEMENTED_INFERSHAPE(ONNXClipV11Op)
 NOT_IMPLEMENTED_INFERSHAPE(ONNXClipV12Op)
-NOT_IMPLEMENTED_INFERSHAPE(ONNXEinsumOp)
 NOT_IMPLEMENTED_INFERSHAPE(ONNXGradientOp)
 NOT_IMPLEMENTED_INFERSHAPE(ONNXMomentumOp)
 NOT_IMPLEMENTED_INFERSHAPE(ONNXNegativeLogLikelihoodLossOp)
@@ -5176,7 +5335,6 @@ NOT_IMPLEMENTED_INFERSHAPE(ONNXPadV2Op)
 NOT_IMPLEMENTED_INFERSHAPE(ONNXPadV11Op)
 NOT_IMPLEMENTED_INFERSHAPE(ONNXResizeV11Op)
 NOT_IMPLEMENTED_INFERSHAPE(ONNXResizeV10Op)
-NOT_IMPLEMENTED_INFERSHAPE(ONNXScatterOp)
 NOT_IMPLEMENTED_INFERSHAPE(ONNXSoftmaxCrossEntropyLossOp)
 NOT_IMPLEMENTED_INFERSHAPE(ONNXUpsampleV9Op)
 NOT_IMPLEMENTED_INFERSHAPE(ONNXUpsampleV7Op)

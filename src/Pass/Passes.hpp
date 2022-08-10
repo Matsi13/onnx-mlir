@@ -43,6 +43,10 @@ std::unique_ptr<mlir::Pass> createInstrumentONNXPass();
 std::unique_ptr<mlir::Pass> createInstrumentONNXPass(
     llvm::StringRef ops, int actions);
 
+/// Passes for instrumenting the ONNX ops to print their operand type
+/// signatures at runtime.
+std::unique_ptr<mlir::Pass> createInstrumentONNXSignaturePass();
+
 /// Pass for verifying Onnx ops before lowering to Krnl
 std::unique_ptr<mlir::Pass> createONNXPreKrnlVerifyPass();
 
@@ -51,6 +55,9 @@ std::unique_ptr<mlir::Pass> createLowerToKrnlPass();
 std::unique_ptr<mlir::Pass> createLowerToKrnlPass(int optLevel);
 std::unique_ptr<mlir::Pass> createLowerToKrnlPass(
     bool emitDealloc, bool enableTiling);
+
+/// Add pass for lowering to Mhlo IR.
+std::unique_ptr<mlir::Pass> createLowerToMhloPass();
 
 /// Pass for lowering krnl.dim operations to standard dialect.
 std::unique_ptr<mlir::Pass> createDisconnectKrnlDimFromAllocPass();
@@ -83,7 +90,12 @@ std::unique_ptr<mlir::Pass> createLowerKrnlRegionPass();
 
 /// Pass for lowering Krnl dialect to LLVM dialect.
 std::unique_ptr<mlir::Pass> createConvertKrnlToLLVMPass();
+std::unique_ptr<mlir::Pass> createConvertKrnlToLLVMPass(
+    bool verifyInputTensors);
 
 } // namespace krnl
+
+/// Pass for lowering Onnx ops to TOSA dialect
+std::unique_ptr<mlir::Pass> createConvertONNXToTOSAPass();
 
 } // namespace onnx_mlir

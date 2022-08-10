@@ -138,7 +138,8 @@ void addPassesNNPA(mlir::OwningOpRef<mlir::ModuleOp> &module,
         optLevel = OptLevel::O2;
       else if (optStr == "-O3")
         optLevel = OptLevel::O3;
-      addONNXToKrnlPasses(pm, optLevel);
+      addONNXToKrnlPasses(
+          pm, optLevel, /*enableCSE*/ true, instrumentONNXSignature);
 
       if (nnpaEmissionTarget >= EmitZLowIR)
         emissionTarget = EmitMLIR;
@@ -158,7 +159,7 @@ void addPassesNNPA(mlir::OwningOpRef<mlir::ModuleOp> &module,
 
   if (emissionTarget >= EmitLLVMIR)
     // Lower the remaining Krnl and all ZLow ops to LLVM dialect.
-    addKrnlToLLVMPasses(pm);
+    addKrnlToLLVMPasses(pm, /*enableCSE=*/true, verifyInputTensors);
 }
 
 } // namespace onnx_mlir

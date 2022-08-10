@@ -13,10 +13,15 @@ set(vcs_depends "${generate_vcs_version_script}")
 find_first_existing_vc_file("${ONNX_MLIR_SRC_ROOT}" onnx_mlir_vc)
 list(APPEND vcs_depends "${onnx_mlir_vc}")
 
+if (LLVM_APPEND_VC_REV)
+  set(onnx_mlir_source_dir ${ONNX_MLIR_SRC_ROOT})
+  set(llvm_source_dir ${LLVM_BUILD_MAIN_SRC_DIR})
+endif()
+
 list(APPEND vcs_generate_commands
   COMMAND ${CMAKE_COMMAND} [[-DNAMES="LLVM\;ONNX_MLIR"]]
-                           "-DLLVM_SOURCE_DIR=${LLVM_BUILD_MAIN_SRC_DIR}"
-                           "-DONNX_MLIR_SOURCE_DIR=${ONNX_MLIR_SRC_ROOT}"
+                           "-DLLVM_SOURCE_DIR=${llvm_source_dir}"
+                           "-DONNX_MLIR_SOURCE_DIR=${onnx_mlir_source_dir}"
                            "-DHEADER_FILE=${version_inc}.tmp"
                            -P "${generate_vcs_version_script}"
   )
@@ -48,4 +53,27 @@ set_source_files_properties("${version_inc}"
              HEADER_FILE_ONLY TRUE
   )
 
-add_custom_target(OMVersion ALL DEPENDS ${version_inc})
+add_onnx_mlir_library(OMVersion
+  Version.cpp
+  ${version_inc}
+
+  LINK_LIBS PUBLIC
+    LLVMSupport
+)
+
+file(READ "${ONNX_MLIR_SRC_ROOT}/VERSION_NUMBER" ONNX_MLIR_VERSION)
+string(STRIP "${ONNX_MLIR_VERSION}" ONNX_MLIR_VERSION)
+list(APPEND DEFINITIONS "ONNX_MLIR_VERSION=\"${ONNX_MLIR_VERSION}\"")
+file(READ "${ONNX_MLIR_SRC_ROOT}/third_party/onnx/VERSION_NUMBER" ONNX_VERSION)
+string(STRIP "${ONNX_VERSION}" ONNX_VERSION)
+if ("${ONNX_VERSION}" STREQUAL "")
+  message(WARNING "third_party/onnx version not detected, you may be on the wrong commit hash")
+else()
+  message(STATUS "Onnx version             : ${ONNX_VERSION}")
+  list(APPEND DEFINITIONS "ONNX_VERSION=\"${ONNX_VERSION}\"")
+endif()
+if (ONNX_MLIR_VENDOR)
+  list(APPEND DEFINITIONS "ONNX_MLIR_VENDOR=\"${ONNX_MLIR_VENDOR }\"")
+endif()
+list(APPEND DEFINITIONS "LLVM_PACKAGE_VERSION=\"${LLVM_PACKAGE_VERSION}\"")
+target_compile_definitions(OMVersion PUBLIC ${DEFINITIONS})

@@ -69,7 +69,8 @@ void addONNXToMLIRPasses(mlir::PassManager &pm) {
   pm.addPass(mlir::createSymbolDCEPass());
 }
 
-void addONNXToKrnlPasses(mlir::PassManager &pm, int optLevel, bool enableCSE) {
+void addONNXToKrnlPasses(mlir::PassManager &pm, int optLevel, bool enableCSE,
+    bool enableInstrumentONNXSignature) {
   if (enableCSE)
     // Eliminate common sub-expressions before lowering to Krnl.
     // TODO: enable this by default when we make sure it works flawlessly.
@@ -79,6 +80,9 @@ void addONNXToKrnlPasses(mlir::PassManager &pm, int optLevel, bool enableCSE) {
   // Add instrumentation for Onnx Ops
   pm.addNestedPass<func::FuncOp>(onnx_mlir::createInstrumentONNXPass(
       instrumentONNXOps, instrumentControlBits.getBits()));
+  if (enableInstrumentONNXSignature)
+    pm.addNestedPass<func::FuncOp>(
+        onnx_mlir::createInstrumentONNXSignaturePass());
   pm.addPass(onnx_mlir::createLowerToKrnlPass(optLevel));
   // An additional pass of canonicalization is helpful because lowering
   // from ONNX dialect to Standard dialect exposes additional canonicalization
@@ -94,13 +98,17 @@ void addKrnlToAffinePasses(mlir::PassManager &pm) {
       onnx_mlir::krnl::createConvertKrnlToAffinePass());
 }
 
-void addKrnlToLLVMPasses(mlir::OpPassManager &pm, bool enableCSE) {
+void addKrnlToLLVMPasses(
+    mlir::OpPassManager &pm, bool enableCSE, bool verifyInputTensors) {
   if (enableCSE)
     // Eliminate common sub-expressions before lowering to Krnl.
     // TODO: enable this by default when we make sure it works flawlessly.
     pm.addPass(mlir::createCSEPass());
   pm.addNestedPass<func::FuncOp>(mlir::createConvertVectorToSCFPass());
   pm.addPass(mlir::createLowerAffinePass());
+
+  // Hoist allocations out of loop nests to avoid stack overflow.
+  pm.addPass(bufferization::createBufferLoopHoistingPass());
 
   // Use MLIR buffer deallocation pass to emit buffer deallocs.
   // Currently this has to be done *after* lowering the affine dialect because
@@ -119,7 +127,7 @@ void addKrnlToLLVMPasses(mlir::OpPassManager &pm, bool enableCSE) {
   pm.addNestedPass<func::FuncOp>(mlir::createConvertSCFToCFPass());
 
   pm.addNestedPass<func::FuncOp>(krnl::createConvertSeqToMemrefPass());
-  pm.addPass(krnl::createConvertKrnlToLLVMPass());
+  pm.addPass(krnl::createConvertKrnlToLLVMPass(verifyInputTensors));
   pm.addPass(mlir::createReconcileUnrealizedCastsPass());
   pm.addPass(mlir::createCanonicalizerPass());
 }
@@ -140,9 +148,8 @@ InputIRLevelType determineInputIRLevel(mlir::OwningOpRef<ModuleOp> &module) {
     return ONNXLevel;
 
   // If there are Krnl ops, the input level is MLIR.
-  bool hasKrnlOps = llvm::any_of(dialectNamespace, [&](StringRef ns) {
-    return (ns == KrnlOpsDialect::getDialectNamespace());
-  });
+  bool hasKrnlOps = llvm::any_of(dialectNamespace,
+      [&](StringRef ns) { return (ns == KrnlDialect::getDialectNamespace()); });
   if (hasKrnlOps)
     return MLIRLevel;
 
@@ -159,13 +166,14 @@ void addPasses(mlir::OwningOpRef<ModuleOp> &module, mlir::PassManager &pm,
 
   if (emissionTarget >= EmitMLIR) {
     if (inputIRLevel <= ONNXLevel)
-      addONNXToKrnlPasses(pm, OptimizationLevel);
+      addONNXToKrnlPasses(
+          pm, OptimizationLevel, /*enableCSE*/ true, instrumentONNXSignature);
     if (inputIRLevel <= MLIRLevel)
       addKrnlToAffinePasses(pm);
   }
 
   if (inputIRLevel <= LLVMLevel && emissionTarget >= EmitLLVMIR)
-    addKrnlToLLVMPasses(pm);
+    addKrnlToLLVMPasses(pm, /*enableCSE=*/true, verifyInputTensors);
 }
 
 } // namespace onnx_mlir
