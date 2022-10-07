@@ -68,9 +68,14 @@ llvm::cl::list<std::string> execNodesOnCpu{"execNodesOnCpu",
 
 void addONNXToZHighPasses(
     mlir::PassManager &pm, ArrayRef<std::string> execNodesOnCpu) {
-  pm.addPass(onnx_mlir::createRewriteONNXForZHighPass(execNodesOnCpu));
-  pm.addPass(onnx_mlir::createShapeInferencePass());
-  pm.addNestedPass<func::FuncOp>(onnx_mlir::createConstPropONNXToONNXPass());
+  for (unsigned i = 0; i < 3; i++) {
+    // Repeat this process so that shape-related ops such as Shape, Expand,
+    // Gather generated during RewriteONNXForZHigh will become constants.
+    pm.addPass(onnx_mlir::createRewriteONNXForZHighPass(execNodesOnCpu));
+    // Simplify shape-related ops, including ShapeOp-to-DimOp replacement,
+    // constant propagation, shape inference and canonicalize.
+    pm.addPass(onnx_mlir::createSimplifyShapeRelatedOpsPass());
+  }
   // Add instrumentation for Onnx Ops in the same way as onnx-mlir.
   if (instrumentZHighOps == "" || instrumentZHighOps == "NONE")
     pm.addNestedPass<func::FuncOp>(onnx_mlir::createInstrumentONNXPass(
@@ -115,7 +120,8 @@ void addPassesNNPA(mlir::OwningOpRef<mlir::ModuleOp> &module,
 
   // LLVM_DEBUG(llvm::dbgs() << "Adding NNPA passes" << std::endl;);
   if (emissionTarget >= EmitONNXIR)
-    addONNXToMLIRPasses(pm);
+    addONNXToMLIRPasses(pm, onnxOpTransformReport, onnxOpTransformReport,
+        /*target CPU*/ maccel.empty());
 
   if (emissionTarget >= EmitMLIR) {
     // Lower zAIU-compatible ONNX ops to ZHigh dialect where possible.
@@ -138,8 +144,9 @@ void addPassesNNPA(mlir::OwningOpRef<mlir::ModuleOp> &module,
         optLevel = OptLevel::O2;
       else if (optStr == "-O3")
         optLevel = OptLevel::O3;
-      addONNXToKrnlPasses(
-          pm, optLevel, /*enableCSE*/ true, instrumentONNXSignature);
+      // Lower ONNX to Krnl, ZHigh to ZLow.
+      addONNXToKrnlPasses(pm, optLevel, /*enableCSE*/ true,
+          instrumentONNXSignature, ONNXOpStats);
 
       if (nnpaEmissionTarget >= EmitZLowIR)
         emissionTarget = EmitMLIR;
@@ -148,6 +155,9 @@ void addPassesNNPA(mlir::OwningOpRef<mlir::ModuleOp> &module,
         addKrnlToAffinePasses(pm);
         // Normalize MemRefs.
         normalizeMemRefsPasses(pm);
+        // Some Knrl ops, e.g. KrnlMemset, potentially exist and will be lowered
+        // to Affine when its operands are normalized.
+        addKrnlToAffinePasses(pm);
         // Optimizations at ZLow.
         pm.addPass(zlow::createZLowRewritePass());
         pm.addPass(mlir::createCanonicalizerPass());

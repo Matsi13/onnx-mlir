@@ -76,6 +76,12 @@ llvm::cl::opt<std::string> shapeInformation("shapeInformation",
         "unknown dimensions)"),
     llvm::cl::value_desc("value"), llvm::cl::cat(OnnxMlirOptions));
 
+llvm::cl::opt<std::string> customEnvFlags("customEnvFlags",
+    llvm::cl::desc("Override default option env var OnnxMlirEnvOptionName: "
+                   "ONNX_MLIR_FLAGS"),
+    llvm::cl::value_desc("option env var"), llvm::cl::init("ONNX_MLIR_FLAGS"),
+    llvm::cl::cat(OnnxMlirOptions));
+
 llvm::cl::opt<std::string> mtriple("mtriple",
     llvm::cl::desc("Override target triple for module"),
     llvm::cl::value_desc("LLVM target triple"), llvm::cl::cat(OnnxMlirOptions),
@@ -123,33 +129,42 @@ llvm::cl::opt<std::string> mllvm("mllvm",
 
 llvm::cl::opt<OptLevel> OptimizationLevel(
     llvm::cl::desc("Optimization levels:"),
-    llvm::cl::values(clEnumVal(O0, "Optimization level 0 (default)."),
-        clEnumVal(O1, "Optimization level 1."),
-        clEnumVal(O2, "Optimization level 2."),
+    llvm::cl::values(clEnumVal(O0, "Optimization level 0 (default):"),
+        clEnumVal(O1, "Optimization level 1,"),
+        clEnumVal(O2, "Optimization level 2,"),
         clEnumVal(O3, "Optimization level 3.")),
     llvm::cl::init(O0), llvm::cl::cat(OnnxMlirCommonOptions));
 
 llvm::cl::opt<std::string> instrumentONNXOps("instrument-onnx-ops",
-    llvm::cl::desc("Specify onnx ops to be instrumented\n"
-                   "\"NONE\" or \"\" for no instrument\n"
-                   "\"ALL\" for all ops. \n"
+    llvm::cl::desc("Specify onnx ops to be instrumented:\n"
+                   "\"NONE\" or \"\" for no instrument,\n"
+                   "\"ALL\" for all ops, \n"
                    "\"op1 op2 ...\" for the specified ops."),
     llvm::cl::init(""), llvm::cl::cat(OnnxMlirOptions));
 
 llvm::cl::bits<InstrumentActions> instrumentControlBits(
     llvm::cl::desc("Specify what instrumentation actions at runtime:"),
     llvm::cl::values(
-        clEnumVal(InstrumentBeforeOp, "insert instrument before op"),
-        clEnumVal(InstrumentAfterOp, "insert instrument after op"),
+        clEnumVal(InstrumentBeforeOp, "insert instrument before op,"),
+        clEnumVal(InstrumentAfterOp, "insert instrument after op,"),
         clEnumVal(
-            InstrumentReportTime, "instrument runtime reports time usage"),
-        clEnumVal(
-            InstrumentReportMemory, "instrument runtime reports memory usage")),
+            InstrumentReportTime, "instrument runtime reports time usage,"),
+        clEnumVal(InstrumentReportMemory,
+            "instrument runtime reports memory usage.")),
     llvm::cl::cat(OnnxMlirOptions));
 
 llvm::cl::opt<bool> instrumentONNXSignature("instrument-onnx-signature",
     llvm::cl::desc("Instrument ONNX ops to print the type of their inputs"),
     llvm::cl::init(false), llvm::cl::cat(OnnxMlirOptions));
+
+llvm::cl::opt<std::string> ONNXOpStats("onnx-op-stats",
+    llvm::cl::desc(
+        "Report the occurrence frequency of ONNX ops in JSON or TXT format:\n"
+        "\"TXT\" for report as text,\n"
+        "\"JSON\" for report as JSON.\n"
+        "Requires targets like --EmitMLIR, --EmitLLVMIR, or binary-generating "
+        "commands."),
+    llvm::cl::init(""), llvm::cl::cat(OnnxMlirOptions));
 
 llvm::cl::opt<bool> enableMemoryBundling("enable-memory-bundling",
     llvm::cl::desc(
@@ -168,11 +183,16 @@ llvm::cl::opt<bool> onnxOpTransformReport("onnx-op-transform-report",
     llvm::cl::desc("Report diagnostic info for op transform passes."),
     llvm::cl::init(false), llvm::cl::cat(OnnxMlirOptions));
 
+llvm::cl::opt<bool> enableParallel("parallel",
+    llvm::cl::desc("Enable parallelization (default=false)\n"
+                   "Set to 'true' if you want to enable parallelization."),
+    llvm::cl::init(false), llvm::cl::cat(OnnxMlirOptions));
+
 llvm::cl::opt<bool> verifyInputTensors("verifyInputTensors",
     llvm::cl::desc(
         "Verify input tensors whenever the entry point function is called.\n"
         "Data type and shape are verified. Enable this may introduce overhead "
-        "in inferencing."),
+        "at runtime."),
     llvm::cl::init(false), llvm::cl::cat(OnnxMlirOptions));
 
 // Configuration states associated with certain options.
@@ -185,6 +205,55 @@ std::map<std::string, std::vector<std::string>> CompilerConfigMap;
 
 // =============================================================================
 // Methods for setting and getting compiler variables.
+
+// The customEnvFlags must be scanned before the normal options.
+bool parseCustomEnvFlagsCommandLineOption(
+    int argc, const char *const *argv, llvm::raw_ostream *errs) {
+  // Find -customEnvFlags=val and save its value.
+  std::string envVar;
+  for (int i = argc - 1; i > 1; --i) {
+    std::string arg(argv[i]);
+    if (arg.find("--customEnvFlags") == 0) {
+      envVar = arg.substr(sizeof("--customEnvFlags"));
+      break;
+    }
+    if (arg.find("-customEnvFlags") == 0) {
+      envVar = arg.substr(sizeof("-customEnvFlags"));
+      break;
+    }
+  }
+  if (!envVar.empty()) {
+    // We have a custom env var, verify that it does not recursively hold
+    // another -customEnvFlags.
+    const char *envValCstr;
+    if ((envValCstr = std::getenv(envVar.c_str()))) {
+      std::string envVal(envValCstr);
+      if (envVal.find("-customEnvFlags") != std::string::npos) {
+        if (errs)
+          *errs << "Warning: recursive use of --customEnvFlags in custom "
+                   "environment flag not permited\n";
+        return false;
+      }
+    }
+    // The envVar is verified, use it.
+    setCustomEnvVar(envVar);
+  }
+  return true;
+}
+
+// Support for customEnvFlags.
+void setCustomEnvVar(const std::string &envVarName) {
+  assert(envVarName != "" && "Expecting valid target envVarName description");
+  LLVM_DEBUG(
+      llvm::dbgs() << DEBUG_TYPE << "Set envVarName\"" << envVarName << "\"\n");
+  customEnvFlags = envVarName;
+}
+
+void clearCustomEnvVar() { customEnvFlags.clear(); }
+
+std::string getCustomEnvVarOption() {
+  return (customEnvFlags != "") ? "--customEnvFlags=" + customEnvFlags : "";
+}
 
 // Support for Triple.
 void setTargetTriple(const std::string &triple) {

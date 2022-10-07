@@ -123,6 +123,8 @@ add_onnx_mlir_library(CompilerUtils
   DEPENDS
   ExternalUtil
   MLIRIR
+  llc
+  opt
 
   INCLUDE_DIRS PRIVATE
   ${FILE_GENERATE_DIR}
@@ -155,6 +157,13 @@ endif()
 
 add_onnx_mlir_library(OnnxMlirCompiler
   OnnxMlirCompiler.cpp
+
+  DEPENDS
+  CompilerUtils
+  ExternalUtil
+
+  INCLUDE_DIRS PRIVATE
+  ${FILE_GENERATE_DIR}
 
   EXCLUDE_FROM_OM_LIBS
   
